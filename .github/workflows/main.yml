@@ -12,13 +12,19 @@ jobs:
 
     steps:
       # Setup environment
-      - name: Install Required Tools
+      - name: Enable Universe and Multiverse repositories
         run: |
-          # Enable 32-bit architecture if needed (for lib32 packages)
+          sudo add-apt-repository universe
+          sudo add-apt-repository multiverse
+          sudo apt-get update
+
+      - name: Enable 32-bit architecture (if needed)
+        run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
 
-          # Install the required packages
+      - name: Install Required Tools
+        run: |
           sudo apt-get install -y openjdk-11-jdk git-core gnupg flex bison gperf build-essential zip curl zlib1g-dev \
             gcc-multilib g++-multilib libc6-dev-i386 libncurses5-dev x11proto-core-dev libx11-dev lib32z1-dev \
             libgl1-mesa-dev libxml2-utils xsltproc unzip bc python-is-python3
