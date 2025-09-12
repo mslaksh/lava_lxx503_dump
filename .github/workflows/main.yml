@@ -1,51 +1,131 @@
-name: GrapheneOS-GSI
+name: Build LineageOS 20 for lxx503
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+    timeout-minutes: 720
 
-      - name: Install dependencies
+    env:
+      # Adjust if you want a different branch
+      LINEAGE_BRANCH: lineage-20.0
+      DEVICE_CODENAME: lxx503
+      DEVICE_MANUFACTURER: lava
+
+    steps:
+      - name: Checkout (workflow repo)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install apt dependencies
         run: |
           sudo apt update
-          sudo apt install -y git-core gnupg flex bison build-essential \
-            zip curl zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 \
-            lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev \
-            libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig python3
+          sudo apt install -y \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git git-lfs gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev \
+            lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev \
+            libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools \
+            xsltproc zip zlib1g-dev python3 python3-pip openjdk-11-jdk zip unzip
 
       - name: Install repo tool
         run: |
-          mkdir -p ~/bin
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-          chmod a+x ~/bin/repo
-          echo "PATH=$HOME/bin:$PATH" >> $GITHUB_ENV
+          sudo curl -o /usr/local/bin/repo https://storage.googleapis.com/git-repo-downloads/repo
+          sudo chmod a+rx /usr/local/bin/repo
+          repo --version
 
-      - name: Sync GrapheneOS source
+      - name: Setup ccache directory
         run: |
-          mkdir grapheneos && cd grapheneos
-          repo init -u https://github.com/GrapheneOS/platform_manifest.git -b 14
+          mkdir -p ~/.ccache
+          echo "max_size = 50G" > ~/.ccache/ccache.conf
+        # cache below will persist .ccache between runs
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-lineage-${{ runner.os }}-${{ env.LINEAGE_BRANCH }}-${{ github.sha }}
+          restore-keys: |
+            ccache-lineage-${{ runner.os }}-${{ env.LINEAGE_BRANCH }}-
+
+      - name: Initialize LineageOS manifest & sync
+        run: |
+          set -euo pipefail
+          mkdir -p workspace && cd workspace
+          repo init -u https://github.com/LineageOS/android.git -b ${LINEAGE_BRANCH}
+          # repo sync can be very large; use shallow fetch where possible
           repo sync -c -j$(nproc --all) --force-sync
 
-      - name: Apply Andy Yan’s GSI patches
+      - name: Add device/kernel/vendor trees for lxx503
         run: |
-          cd grapheneos
-          git clone https://github.com/AndyCGYan/lineage_build_unified -b lineage-20-light patches
-          bash patches/apply.sh
+          set -euo pipefail
+          cd workspace
+          # Clone your device/kernel/vendor into expected paths so the build system finds them
+          # Device tree
+          mkdir -p device/${DEVICE_MANUFACTURER}
+          git clone https://github.com/mslaksh/LXX503 device/${DEVICE_MANUFACTURER}/${DEVICE_CODENAME} || true
+          # Kernel
+          mkdir -p kernel/${DEVICE_MANUFACTURER}
+          git clone https://github.com/mslaksh/android_kernel_lava_LXX503 kernel/${DEVICE_MANUFACTURER}/${DEVICE_CODENAME} || true
+          # Vendor (use the branch/tag path you gave earlier)
+          mkdir -p vendor/${DEVICE_MANUFACTURER}
+          git clone --depth 1 https://github.com/mslaksh/lava_lxx503_dump vendor/${DEVICE_MANUFACTURER}/${DEVICE_CODENAME} || true
 
-      - name: Build GSI
+      - name: Local git config (repo-local)
         run: |
-          cd grapheneos
-          . build/envsetup.sh
-          lunch aosp_arm64_ab-userdebug
-          mka systemimage
+          cd workspace
+          # avoid global git config issues inside GitHub Actions
+          git config --local user.name "github-actions"
+          git config --local user.email "actions@github.com" || true
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+      - name: Prepare environment and build
+        env:
+          PATH: $HOME/.local/bin:$PATH
+          USE_CCACHE: 1
+          CCACHE_DIR: $HOME/.ccache
+        run: |
+          set -euo pipefail
+          cd workspace
+          # Ensure correct python is used
+          python3 -m pip install -q --user -U pip
+
+          # Setup build env
+          source build/envsetup.sh
+
+          # Confirm lunch target exists (if the device tree provides it)
+          # The expected lunch name: lineage_lxx503-userdebug
+          # If it's different, the build will fail — device tree should supply vendor.mk and BoardConfig
+          lunch lineage_${DEVICE_CODENAME}-userdebug
+
+          # Build bacon (Lineage flashable zip)
+          # Use all cores; builds may take hours
+          mka bacon -j$(nproc --all)
+
+      - name: Collect build artifacts
+        run: |
+          set -euo pipefail
+          cd workspace
+          mkdir -p $GITHUB_WORKSPACE/artifacts
+          OUTDIR="out/target/product/${DEVICE_CODENAME}"
+          if [ -d "$OUTDIR" ]; then
+            # copy zips, images and target files
+            cp -v $OUTDIR/*.zip $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
+            cp -v $OUTDIR/*.img $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
+            cp -v $OUTDIR/*target_files*.zip $GITHUB_WORKSPACE/artifacts/ 2>/dev/null || true
+            ls -lah $GITHUB_WORKSPACE/artifacts || true
+          else
+            echo "Build output directory not found: $OUTDIR"
+            ls -R out || true
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
-          name: grapheneos-gsi
-          path: grapheneos/out/target/product/*/*.img
+          name: lineage-lxx503-build
+          path: artifacts/
