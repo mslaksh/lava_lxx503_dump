@@ -18,7 +18,12 @@ jobs:
             git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev \
             liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
             lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
-            python-is-python3 openjdk-11-jdk wget
+            python-is-python3 openjdk-11-jdk wget -y
+
+      - name: Install repo tool
+        run: |
+          sudo curl https://storage.googleapis.com/git-repo-downloads/repo -o /usr/local/bin/repo
+          sudo chmod a+rx /usr/local/bin/repo
 
       - name: Initialize /e/OS Source
         run: |
@@ -32,22 +37,23 @@ jobs:
           git clone https://github.com/AndyCGYan/lineage_build_unified -b lineage-20-light patches
           bash patches/apply-patches.sh .
 
-      - name: Build GSI
+      - name: Build GSI Variants
         run: |
           cd eos
           source build/envsetup.sh
-          lunch treble_arm64_bvS-userdebug
-          mka systemimage
-
-      - name: Prepare Artifacts
-        run: |
-          cd eos/out/target/product/treble_arm64_bvS
-          mv system.img eos-gsi-arm64-ab.img
-          xz -z -9 eos-gsi-arm64-ab.img
+          VARIANTS=("treble_arm64_bvS-userdebug" "treble_arm64_avS-userdebug" "treble_arm64_bS-userdebug" "treble_arm64_aS-userdebug")
           mkdir -p $GITHUB_WORKSPACE/artifacts
-          mv *.xz $GITHUB_WORKSPACE/artifacts/
+          for variant in "${VARIANTS[@]}"; do
+            lunch $variant
+            mka systemimage -j$(nproc --all) || exit 1
+            outdir="out/target/product/$(echo $variant | cut -d- -f1)"
+            imgname="eos-gsi-${variant}.img"
+            cp $outdir/system.img $imgname
+            xz -z -9 $imgname
+            mv $imgname.xz $GITHUB_WORKSPACE/artifacts/
+          done
 
-      - name: Upload Artifact
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: eos-gsi
