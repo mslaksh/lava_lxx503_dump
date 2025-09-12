@@ -1,4 +1,4 @@
-name: Build /e/OS GSI
+name: GrapheneOS-GSI
 
 on:
   workflow_dispatch:
@@ -6,56 +6,46 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v3
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
-            git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev \
-            liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils \
-            lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
-            python-is-python3 openjdk-11-jdk wget
+          sudo apt install -y git-core gnupg flex bison build-essential \
+            zip curl zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 \
+            lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev \
+            libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig python3
 
       - name: Install repo tool
         run: |
-          sudo curl https://storage.googleapis.com/git-repo-downloads/repo -o /usr/local/bin/repo
-          sudo chmod a+rx /usr/local/bin/repo
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "PATH=$HOME/bin:$PATH" >> $GITHUB_ENV
 
-      - name: Initialize /e/OS Source
+      - name: Sync GrapheneOS source
         run: |
-          mkdir eos && cd eos
-          # Use a valid release tag (tags from e/os/releases) instead of “v2-s”
-          repo init -u https://gitlab.e.foundation/e/os/releases.git -b v3.1.1-s
+          mkdir grapheneos && cd grapheneos
+          repo init -u https://github.com/GrapheneOS/platform_manifest.git -b 14
           repo sync -c -j$(nproc --all) --force-sync
 
-      - name: Apply Andy Yan Patches
+      - name: Apply Andy Yan’s GSI patches
         run: |
-          cd eos
+          cd grapheneos
           git clone https://github.com/AndyCGYan/lineage_build_unified -b lineage-20-light patches
-          bash patches/apply-patches.sh .
+          bash patches/apply.sh
 
-      - name: Build GSI Variants
+      - name: Build GSI
         run: |
-          cd eos
-          source build/envsetup.sh
-          VARIANTS=("treble_arm64_bvS-userdebug" "treble_arm64_avS-userdebug" "treble_arm64_bS-userdebug" "treble_arm64_aS-userdebug")
-          mkdir -p $GITHUB_WORKSPACE/artifacts
-          for variant in "${VARIANTS[@]}"; do
-            lunch $variant
-            mka systemimage -j$(nproc --all) || exit 1
-            outdir="out/target/product/$(echo $variant | cut -d- -f1)"
-            imgname="eos-gsi-${variant}.img"
-            cp $outdir/system.img $imgname
-            xz -z -9 $imgname
-            mv $imgname.xz $GITHUB_WORKSPACE/artifacts/
-          done
+          cd grapheneos
+          . build/envsetup.sh
+          lunch aosp_arm64_ab-userdebug
+          mka systemimage
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
         with:
-          name: eos-gsi
-          path: artifacts/
+          name: grapheneos-gsi
+          path: grapheneos/out/target/product/*/*.img
